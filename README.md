@@ -21,7 +21,7 @@ A lightweight Flask middleware service that translates Kubernetes alerts from Pr
 docker run -d \
   --name alert-translator \
   -p 5000:5000 \
-  -e NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.portal.apex42group.com"]' \
+  -e NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.server.com"]' \
   -e NTFY_TOPIC="k8s-alerts" \
   your-registry/alert-translator:latest
 ```
@@ -51,7 +51,7 @@ spec:
         - containerPort: 5000
         env:
         - name: NTFY_URLS
-          value: '["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.portal.apex42group.com"]'
+          value: '["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.server.com"]'
         - name: NTFY_TOPIC
           value: "kubernetes-alerts"
         livenessProbe:
@@ -95,12 +95,12 @@ spec:
 
 **JSON Array (Recommended):**
 ```bash
-NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.portal.apex42group.com"]'
+NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.server.com"]'
 ```
 
 **Comma-Separated:**
 ```bash
-NTFY_URLS="http://ntfy.ntfy.svc.cluster.local,https://ntfy.portal.apex42group.com"
+NTFY_URLS="http://ntfy.ntfy.svc.cluster.local,https://ntfy.server.com"
 ```
 
 **Single URL (Legacy):**
