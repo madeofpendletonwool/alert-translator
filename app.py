@@ -99,7 +99,7 @@ def send_startup_notification():
             auth_status = "🔐 with auth" if server.get('auth') else "🔓 no auth"
             server_list.append(f"• {server.get('name', 'unnamed')}: {server['url']} ({auth_status})")
 
-        title = "🚀 Alert Translator Started"
+        title = "Alert Translator Started"
         message_parts = [
             "✅ Alert Translator service is now online and ready to receive alerts!",
             f"\n📡 Configured Servers ({len(CONFIG['servers'])}):",
@@ -171,7 +171,9 @@ def get_alert_config(severity):
 
 def clean_header_value(value):
     """Remove emoji and non-ASCII characters from header values"""
-    return re.sub(r'[^\x00-\x7F]+', '', value)
+    # Strip whitespace and remove non-ASCII characters
+    cleaned = re.sub(r'[^\x00-\x7F]+', '', str(value)).strip()
+    return cleaned
 
 def get_auth_headers(auth_config):
     """Generate authentication headers based on auth config"""
