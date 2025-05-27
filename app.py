@@ -90,6 +90,49 @@ for server in CONFIG['servers']:
     logger.info(f"  - {server['name']}: {server['url']} ({auth_info})")
 logger.info(f"Using topic: {CONFIG['topic']}")
 
+def send_startup_notification():
+    """Send a startup notification to confirm the service is running"""
+    try:
+        # Get server info for the message
+        server_list = []
+        for server in CONFIG['servers']:
+            auth_status = "🔐 with auth" if server.get('auth') else "🔓 no auth"
+            server_list.append(f"• {server.get('name', 'unnamed')}: {server['url']} ({auth_status})")
+
+        title = "🚀 Alert Translator Started"
+        message_parts = [
+            "✅ Alert Translator service is now online and ready to receive alerts!",
+            f"\n📡 Configured Servers ({len(CONFIG['servers'])}):",
+            "\n".join(server_list),
+            f"\n📢 Topic: {CONFIG['topic']}",
+            f"\n🕐 Started at: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            "\n🎯 You will now receive Kubernetes alerts from Prometheus/Alertmanager on this topic."
+        ]
+
+        message = '\n'.join(message_parts)
+        alert_config = get_alert_config('info')
+        tags = ['startup', 'alert-translator', 'system']
+
+        success_count, results = send_to_ntfy_servers(title, message, alert_config, tags)
+
+        if success_count > 0:
+            logger.info(f"Startup notification sent successfully to {success_count}/{len(CONFIG['servers'])} servers")
+        else:
+            logger.warning("Failed to send startup notification to any servers")
+
+        # Log individual results
+        for result in results:
+            if result['status'] == 'success':
+                logger.info(f"Startup notification delivered to {result['server']}")
+            else:
+                logger.error(f"Failed to deliver startup notification to {result['server']}: {result.get('error', 'Unknown error')}")
+
+    except Exception as e:
+        logger.error(f"Error sending startup notification: {e}")
+
+# Send startup notification
+send_startup_notification()
+
 SEVERITY_CONFIGS = {
     'critical': {
         'priority': 'urgent',
