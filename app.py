@@ -26,6 +26,15 @@ DEFAULT_CONFIG = {
     'topic': 'kubernetes-alerts'
 }
 
+def substitute_env_vars(text):
+    """Substitute environment variables in text using ${VAR} syntax"""
+    import re
+    def replace_var(match):
+        var_name = match.group(1)
+        return os.getenv(var_name, match.group(0))  # Return original if env var not found
+
+    return re.sub(r'\$\{([^}]+)\}', replace_var, text)
+
 def load_config():
     """Load configuration from file or environment variables"""
     config_file = os.getenv('CONFIG_FILE', '/etc/alert-translator/config.yaml')
@@ -34,9 +43,16 @@ def load_config():
     if os.path.exists(config_file):
         try:
             with open(config_file, 'r') as f:
-                config = yaml.safe_load(f)
-                logger.info(f"Loaded configuration from {config_file}")
-                return config
+                config_text = f.read()
+
+            # Substitute environment variables
+            config_text = substitute_env_vars(config_text)
+            logger.debug(f"Config after env substitution: {config_text}")
+
+            # Parse YAML
+            config = yaml.safe_load(config_text)
+            logger.info(f"Loaded configuration from {config_file}")
+            return config
         except Exception as e:
             logger.error(f"Failed to load config file {config_file}: {e}")
 
