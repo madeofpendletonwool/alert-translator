@@ -130,9 +130,6 @@ def send_startup_notification():
     except Exception as e:
         logger.error(f"Error sending startup notification: {e}")
 
-# Send startup notification
-send_startup_notification()
-
 SEVERITY_CONFIGS = {
     'critical': {
         'priority': 'urgent',
@@ -383,4 +380,6 @@ def get_config():
     return jsonify(safe_config), 200
 
 if __name__ == '__main__':
+    # Send startup notification now that all functions are defined
+    send_startup_notification()
     app.run(host='0.0.0.0', port=5000)
