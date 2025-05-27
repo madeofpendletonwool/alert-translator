@@ -4,6 +4,9 @@ import os
 import re
 import json
 import logging
+import yaml
+from requests.auth import HTTPBasicAuth
+import base64
 
 app = Flask(__name__)
 
@@ -11,28 +14,65 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Parse NTFY URLs - supports JSON array or comma-separated values
-def parse_ntfy_urls():
-    urls_env = os.getenv('NTFY_URLS', os.getenv('NTFY_URL', 'http://ntfy.ntfy.svc.cluster.local'))
+# Default configuration
+DEFAULT_CONFIG = {
+    'servers': [
+        {
+            'name': 'default',
+            'url': 'http://ntfy.ntfy.svc.cluster.local',
+            'auth': None
+        }
+    ],
+    'topic': 'kubernetes-alerts'
+}
 
-    # Try to parse as JSON array first
-    try:
-        urls = json.loads(urls_env)
-        if isinstance(urls, list):
-            return urls
-    except (json.JSONDecodeError, TypeError):
-        pass
+def load_config():
+    """Load configuration from file or environment variables"""
+    config_file = os.getenv('CONFIG_FILE', '/etc/alert-translator/config.yaml')
 
-    # Fall back to comma-separated values
-    urls = [url.strip() for url in urls_env.split(',') if url.strip()]
-    return urls
+    # Try to load from config file first
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f)
+                logger.info(f"Loaded configuration from {config_file}")
+                return config
+        except Exception as e:
+            logger.error(f"Failed to load config file {config_file}: {e}")
 
-NTFY_URLS = parse_ntfy_urls()
-NTFY_TOPIC = os.getenv('NTFY_TOPIC', 'kubernetes-alerts')
+    # Fall back to environment variables for backward compatibility
+    config = DEFAULT_CONFIG.copy()
 
-# Validate URLs on startup
-logger.info(f"Configured NTFY servers: {NTFY_URLS}")
-logger.info(f"Using topic: {NTFY_TOPIC}")
+    # Parse NTFY URLs - supports JSON array or comma-separated values
+    urls_env = os.getenv('NTFY_URLS', os.getenv('NTFY_URL'))
+    if urls_env:
+        try:
+            urls = json.loads(urls_env)
+            if isinstance(urls, list):
+                config['servers'] = [{'name': f'server_{i}', 'url': url, 'auth': None} for i, url in enumerate(urls)]
+            else:
+                raise ValueError("Not a list")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # Fall back to comma-separated values
+            urls = [url.strip() for url in urls_env.split(',') if url.strip()]
+            config['servers'] = [{'name': f'server_{i}', 'url': url, 'auth': None} for i, url in enumerate(urls)]
+
+    # Override topic if set in environment
+    if os.getenv('NTFY_TOPIC'):
+        config['topic'] = os.getenv('NTFY_TOPIC')
+
+    logger.info("Loaded configuration from environment variables")
+    return config
+
+# Load configuration
+CONFIG = load_config()
+
+# Validate configuration on startup
+logger.info(f"Configured NTFY servers:")
+for server in CONFIG['servers']:
+    auth_info = "with auth" if server.get('auth') else "no auth"
+    logger.info(f"  - {server['name']}: {server['url']} ({auth_info})")
+logger.info(f"Using topic: {CONFIG['topic']}")
 
 SEVERITY_CONFIGS = {
     'critical': {
@@ -77,28 +117,65 @@ def clean_header_value(value):
     """Remove emoji and non-ASCII characters from header values"""
     return re.sub(r'[^\x00-\x7F]+', '', value)
 
+def get_auth_headers(auth_config):
+    """Generate authentication headers based on auth config"""
+    if not auth_config:
+        return {}
+
+    auth_type = auth_config.get('type', '').lower()
+
+    if auth_type == 'basic':
+        username = auth_config.get('username')
+        password = auth_config.get('password')
+        if username and password:
+            credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+            return {'Authorization': f'Basic {credentials}'}
+
+    elif auth_type == 'token':
+        token = auth_config.get('token')
+        if token:
+            return {'Authorization': f'Bearer {token}'}
+
+    return {}
+
 def send_to_ntfy_servers(title, message, alert_config, tags):
     """Send notification to all configured NTFY servers"""
-    headers = {
+    base_headers = {
         'Title': clean_header_value(title),
         'Priority': alert_config['priority'],
-        'Tags': clean_header_value(','.join(tags))
+        'Tags': clean_header_value(','.join(tags)),
+        'Content-Type': 'text/plain; charset=utf-8'
     }
 
     success_count = 0
-    for ntfy_url in NTFY_URLS:
-        try:
-            url = f"{ntfy_url.rstrip('/')}/{NTFY_TOPIC}"
-            response = requests.post(url, headers=headers, data=message, timeout=10)
-            response.raise_for_status()
-            logger.info(f"Successfully sent alert to {ntfy_url}")
-            success_count += 1
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send alert to {ntfy_url}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error sending to {ntfy_url}: {e}")
+    results = []
 
-    return success_count
+    for server in CONFIG['servers']:
+        server_name = server.get('name', 'unnamed')
+        server_url = server['url']
+
+        try:
+            # Prepare headers with authentication
+            headers = base_headers.copy()
+            auth_headers = get_auth_headers(server.get('auth'))
+            headers.update(auth_headers)
+
+            url = f"{server_url.rstrip('/')}/{CONFIG['topic']}"
+            response = requests.post(url, headers=headers, data=message.encode('utf-8'), timeout=10)
+            response.raise_for_status()
+
+            logger.info(f"Successfully sent alert to {server_name} ({server_url})")
+            success_count += 1
+            results.append({'server': server_name, 'status': 'success', 'url': server_url})
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to send alert to {server_name} ({server_url}): {e}")
+            results.append({'server': server_name, 'status': 'failed', 'error': str(e), 'url': server_url})
+        except Exception as e:
+            logger.error(f"Unexpected error sending to {server_name} ({server_url}): {e}")
+            results.append({'server': server_name, 'status': 'error', 'error': str(e), 'url': server_url})
+
+    return success_count, results
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -109,6 +186,7 @@ def webhook():
 
         alerts_processed = 0
         total_notifications_sent = 0
+        all_results = []
 
         for alert in alert_data.get('alerts', []):
             severity = alert.get('labels', {}).get('severity', 'info')
@@ -163,18 +241,20 @@ def webhook():
 
             # Send to all NTFY servers
             message = '\n'.join(message_parts)
-            success_count = send_to_ntfy_servers(title, message, alert_config, tags)
+            success_count, results = send_to_ntfy_servers(title, message, alert_config, tags)
 
             alerts_processed += 1
             total_notifications_sent += success_count
+            all_results.extend(results)
 
-            logger.info(f"Processed alert '{alert.get('labels', {}).get('alertname', 'Unknown')}' - sent to {success_count}/{len(NTFY_URLS)} servers")
+            logger.info(f"Processed alert '{alert.get('labels', {}).get('alertname', 'Unknown')}' - sent to {success_count}/{len(CONFIG['servers'])} servers")
 
         return jsonify({
             'status': 'success',
             'alerts_processed': alerts_processed,
             'notifications_sent': total_notifications_sent,
-            'servers_configured': len(NTFY_URLS)
+            'servers_configured': len(CONFIG['servers']),
+            'results': all_results
         }), 200
 
     except Exception as e:
@@ -184,11 +264,19 @@ def webhook():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
+    server_info = []
+    for server in CONFIG['servers']:
+        server_info.append({
+            'name': server.get('name', 'unnamed'),
+            'url': server['url'],
+            'has_auth': bool(server.get('auth'))
+        })
+
     return jsonify({
         'status': 'healthy',
-        'servers_configured': len(NTFY_URLS),
-        'ntfy_servers': NTFY_URLS,
-        'topic': NTFY_TOPIC
+        'servers_configured': len(CONFIG['servers']),
+        'servers': server_info,
+        'topic': CONFIG['topic']
     }), 200
 
 @app.route('/test', methods=['POST'])
@@ -200,18 +288,40 @@ def test_notification():
         test_config = get_alert_config('info')
         test_tags = ['test', 'alert-translator']
 
-        success_count = send_to_ntfy_servers(test_title, test_message, test_config, test_tags)
+        success_count, results = send_to_ntfy_servers(test_title, test_message, test_config, test_tags)
 
         return jsonify({
             'status': 'success',
             'message': 'Test notification sent',
             'sent_to_servers': success_count,
-            'total_servers': len(NTFY_URLS)
+            'total_servers': len(CONFIG['servers']),
+            'results': results
         }), 200
 
     except Exception as e:
         logger.error(f"Error sending test notification: {e}")
         return jsonify({'error': 'Failed to send test notification'}), 500
+
+@app.route('/config', methods=['GET'])
+def get_config():
+    """Get current configuration (without sensitive data)"""
+    safe_config = CONFIG.copy()
+
+    # Remove sensitive authentication data
+    safe_servers = []
+    for server in safe_config['servers']:
+        safe_server = {
+            'name': server.get('name', 'unnamed'),
+            'url': server['url'],
+            'has_auth': bool(server.get('auth'))
+        }
+        if server.get('auth'):
+            safe_server['auth_type'] = server['auth'].get('type', 'unknown')
+        safe_servers.append(safe_server)
+
+    safe_config['servers'] = safe_servers
+
+    return jsonify(safe_config), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

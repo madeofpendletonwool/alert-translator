@@ -5,30 +5,177 @@ A lightweight Flask middleware service that translates Kubernetes alerts from Pr
 ## Features
 
 - 🚀 **Multi-Server Support**: Send alerts to multiple NTFY servers simultaneously
+- 🔐 **Authentication Support**: Basic auth and token-based authentication per server
 - 🎨 **Rich Formatting**: Clean, emoji-enhanced notifications with proper severity levels
 - 🏷️ **Smart Labeling**: Automatically extracts and formats Kubernetes labels (namespace, pod, instance, job)
 - ⚡ **Multiple Severity Levels**: Critical, Warning, and Info alerts with appropriate priorities
 - 🔄 **Resolution Tracking**: Handles both firing and resolved alert states
 - 📊 **Health Monitoring**: Built-in health check and test endpoints
 - 🛡️ **Error Handling**: Robust error handling with detailed logging
-- 🐳 **Container Ready**: Lightweight Alpine-based Docker container
+- 🐳 **Container Ready**: Lightweight Python-based Docker container
+- ⚙️ **Flexible Configuration**: YAML config files or environment variables
 
 ## Quick Start
 
-### Docker Run
+### Docker Run (Environment Variables)
 
 ```bash
 docker run -d \
   --name alert-translator \
   -p 5000:5000 \
-  -e NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.server.com"]' \
+  -e NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.example.com"]' \
   -e NTFY_TOPIC="k8s-alerts" \
   your-registry/alert-translator:latest
 ```
 
-### Kubernetes Deployment
+### Docker Run (Config File)
+
+```bash
+# Create config file
+cat > config.yaml << EOF
+topic: "kubernetes-alerts"
+servers:
+  - name: "internal-ntfy"
+    url: "http://ntfy.ntfy.svc.cluster.local"
+  - name: "external-ntfy"
+    url: "https://ntfy.example.com"
+    auth:
+      type: "basic"
+      username: "myuser"
+      password: "mypass"
+EOF
+
+# Run with config file
+docker run -d \
+  --name alert-translator \
+  -p 5000:5000 \
+  -v $(pwd)/config.yaml:/etc/alert-translator/config.yaml \
+  -e CONFIG_FILE="/etc/alert-translator/config.yaml" \
+  your-registry/alert-translator:latest
+```
+
+## Configuration
+
+### Method 1: YAML Configuration File (Recommended)
+
+Create a `config.yaml` file:
 
 ```yaml
+# Global topic for all servers
+topic: "kubernetes-alerts"
+
+# List of NTFY servers
+servers:
+  # Internal server (no authentication)
+  - name: "internal-ntfy"
+    url: "http://ntfy.ntfy.svc.cluster.local"
+
+  # External server with basic authentication
+  - name: "external-ntfy"
+    url: "https://ntfy.example.com"
+    auth:
+      type: "basic"
+      username: "your-username"
+      password: "your-password"
+
+  # Server with token authentication
+  - name: "token-server"
+    url: "https://ntfy.another.com"
+    auth:
+      type: "token"
+      token: "tk_your_access_token_here"
+```
+
+Set the config file location:
+```bash
+export CONFIG_FILE="/path/to/config.yaml"
+```
+
+### Method 2: Environment Variables (Legacy Support)
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `CONFIG_FILE` | Path to YAML config file | `/etc/alert-translator/config.yaml` | `/app/config.yaml` |
+| `NTFY_URLS` | NTFY server URLs (JSON array or comma-separated) | `http://ntfy.ntfy.svc.cluster.local` | `["http://server1", "http://server2"]` |
+| `NTFY_URL` | Legacy single URL support | `http://ntfy.ntfy.svc.cluster.local` | `http://ntfy.example.com` |
+| `NTFY_TOPIC` | NTFY topic name | `kubernetes-alerts` | `my-alerts` |
+
+### NTFY_URLS Format Options
+
+**JSON Array (Recommended):**
+```bash
+NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.example.com"]'
+```
+
+**Comma-Separated:**
+```bash
+NTFY_URLS="http://ntfy.ntfy.svc.cluster.local,https://ntfy.example.com"
+```
+
+**Single URL (Legacy):**
+```bash
+NTFY_URL="http://ntfy.ntfy.svc.cluster.local"
+```
+
+## Authentication Types
+
+### Basic Authentication
+```yaml
+auth:
+  type: "basic"
+  username: "your-username"
+  password: "your-password"
+```
+
+### Token Authentication
+```yaml
+auth:
+  type: "token"
+  token: "tk_your_access_token_here"
+```
+
+### No Authentication
+Simply omit the `auth` section for servers that don't require authentication.
+
+## Kubernetes Deployment
+
+### ConfigMap and Secret Approach
+
+```yaml
+# ConfigMap for configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-translator-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    topic: "kubernetes-alerts"
+    servers:
+      - name: "internal-ntfy"
+        url: "http://ntfy.ntfy.svc.cluster.local"
+      - name: "external-ntfy"
+        url: "https://ntfy.example.com"
+        auth:
+          type: "basic"
+          username: "${EXTERNAL_NTFY_USERNAME}"
+          password: "${EXTERNAL_NTFY_PASSWORD}"
+
+---
+# Secret for credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alert-translator-secrets
+  namespace: monitoring
+type: Opaque
+data:
+  # Base64 encoded credentials
+  external-ntfy-username: bXl1c2VybmFtZQ==  # "myusername"
+  external-ntfy-password: bXlwYXNzd29yZA==  # "mypassword"
+
+---
+# Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,15 +197,27 @@ spec:
         ports:
         - containerPort: 5000
         env:
-        - name: NTFY_URLS
-          value: '["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.server.com"]'
-        - name: NTFY_TOPIC
-          value: "kubernetes-alerts"
+        - name: CONFIG_FILE
+          value: "/etc/alert-translator/config.yaml"
+        - name: EXTERNAL_NTFY_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: alert-translator-secrets
+              key: external-ntfy-username
+        - name: EXTERNAL_NTFY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: alert-translator-secrets
+              key: external-ntfy-password
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/alert-translator
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /health
             port: 5000
-          initialDelaySeconds: 10
+          initialDelaySeconds: 30
           periodSeconds: 30
         readinessProbe:
           httpGet:
@@ -66,7 +225,13 @@ spec:
             port: 5000
           initialDelaySeconds: 5
           periodSeconds: 10
+      volumes:
+      - name: config-volume
+        configMap:
+          name: alert-translator-config
+
 ---
+# Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -79,33 +244,6 @@ spec:
   - port: 80
     targetPort: 5000
   type: ClusterIP
-```
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Default | Example |
-|----------|-------------|---------|---------|
-| `NTFY_URLS` | NTFY server URLs (JSON array or comma-separated) | `http://ntfy.ntfy.svc.cluster.local` | `["http://server1", "http://server2"]` |
-| `NTFY_URL` | Legacy single URL support | `http://ntfy.ntfy.svc.cluster.local` | `http://ntfy.example.com` |
-| `NTFY_TOPIC` | NTFY topic name | `kubernetes-alerts` | `my-alerts` |
-
-### NTFY_URLS Format Options
-
-**JSON Array (Recommended):**
-```bash
-NTFY_URLS='["http://ntfy.ntfy.svc.cluster.local", "https://ntfy.server.com"]'
-```
-
-**Comma-Separated:**
-```bash
-NTFY_URLS="http://ntfy.ntfy.svc.cluster.local,https://ntfy.server.com"
-```
-
-**Single URL (Legacy):**
-```bash
-NTFY_URL="http://ntfy.ntfy.svc.cluster.local"
 ```
 
 ## Alertmanager Configuration
@@ -141,7 +279,11 @@ Response:
   "status": "success",
   "alerts_processed": 2,
   "notifications_sent": 4,
-  "servers_configured": 2
+  "servers_configured": 2,
+  "results": [
+    {"server": "internal-ntfy", "status": "success", "url": "http://ntfy.ntfy.svc.cluster.local"},
+    {"server": "external-ntfy", "status": "success", "url": "https://ntfy.example.com"}
+  ]
 }
 ```
 
@@ -153,7 +295,10 @@ Response:
 {
   "status": "healthy",
   "servers_configured": 2,
-  "ntfy_servers": ["http://server1", "http://server2"],
+  "servers": [
+    {"name": "internal-ntfy", "url": "http://ntfy.ntfy.svc.cluster.local", "has_auth": false},
+    {"name": "external-ntfy", "url": "https://ntfy.example.com", "has_auth": true}
+  ],
   "topic": "kubernetes-alerts"
 }
 ```
@@ -167,7 +312,25 @@ Response:
   "status": "success",
   "message": "Test notification sent",
   "sent_to_servers": 2,
-  "total_servers": 2
+  "total_servers": 2,
+  "results": [
+    {"server": "internal-ntfy", "status": "success", "url": "http://ntfy.ntfy.svc.cluster.local"},
+    {"server": "external-ntfy", "status": "success", "url": "https://ntfy.example.com"}
+  ]
+}
+```
+
+### GET /config
+**Get current configuration (without sensitive data)**
+
+Response:
+```json
+{
+  "topic": "kubernetes-alerts",
+  "servers": [
+    {"name": "internal-ntfy", "url": "http://ntfy.ntfy.svc.cluster.local", "has_auth": false},
+    {"name": "external-ntfy", "url": "https://ntfy.example.com", "has_auth": true, "auth_type": "basic"}
+  ]
 }
 ```
 
@@ -207,19 +370,50 @@ Response:
 ## Building
 
 ### Requirements
-- Python 3.9+
-- Flask
-- Requests
-- Emoji (for enhanced formatting)
+```txt
+Flask==3.0.0
+requests==2.31.0
+PyYAML==6.0.1
+```
 
 ### Build Docker Image
 ```bash
+# Create Dockerfile
+cat > Dockerfile << EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+
+RUN useradd --create-home --shell /bin/bash app && \
+    chown -R app:app /app
+USER app
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+EOF
+
+# Build
 docker build -t alert-translator:latest .
 ```
 
 ### Local Development
 ```bash
 pip install -r requirements.txt
+export CONFIG_FILE="config.yaml"
+# or
 export NTFY_URLS='["http://localhost:8080"]'
 export NTFY_TOPIC="test-alerts"
 python app.py
@@ -235,6 +429,11 @@ curl -X POST http://localhost:5000/test
 ### Check Health
 ```bash
 curl http://localhost:5000/health
+```
+
+### Check Configuration
+```bash
+curl http://localhost:5000/config
 ```
 
 ### Simulate Alertmanager Webhook
@@ -264,18 +463,28 @@ curl -X POST http://localhost:5000/webhook \
 ### Common Issues
 
 **Notifications not appearing:**
-1. Check NTFY server accessibility
+1. Check NTFY server accessibility: `curl http://your-ntfy-server/health`
 2. Verify topic name matches your NTFY subscription
 3. Check logs for connection errors
+4. Verify authentication credentials if using auth
+
+**Authentication errors:**
+1. Check username/password are correct
+2. Verify token is valid and has correct permissions
+3. Check if the NTFY server has auth enabled
+4. Review server logs for auth failures
 
 **Only some servers receiving notifications:**
 1. Review logs for individual server errors
 2. Verify all URLs are accessible from the container
 3. Check network policies if running in Kubernetes
+4. Test each server individually
 
-**Emoji not displaying:**
-1. Ensure your NTFY client supports emoji
-2. Check that the `emoji` package is installed
+**Configuration errors:**
+1. Validate YAML syntax: `python -c "import yaml; yaml.safe_load(open('config.yaml'))"`
+2. Check environment variable substitution
+3. Verify file permissions for config file
+4. Check the `/config` endpoint for current configuration
 
 ### Logs
 ```bash
@@ -298,11 +507,13 @@ logging.basicConfig(level=logging.DEBUG)
 ┌─────────────────┐    ┌──────────────────┐    ┌──────────────┐
 │   Alertmanager  │───▶│ Alert Translator │───▶│  NTFY Server │
 │                 │    │                  │    │      #1      │
-│  - Prometheus   │    │ - Format alerts  │    └──────────────┘
-│  - Rules        │    │ - Multi-server   │           │
-│  - Routing      │    │ - Error handling │    ┌──────────────┐
-└─────────────────┘    │ - Health checks  │───▶│  NTFY Server │
+│  - Prometheus   │    │ - Format alerts  │    │  (No Auth)   │
+│  - Rules        │    │ - Multi-server   │    └──────────────┘
+│  - Routing      │    │ - Authentication │           │
+└─────────────────┘    │ - Error handling │    ┌──────────────┐
+                       │ - Health checks  │───▶│  NTFY Server │
                        └──────────────────┘    │      #2      │
+                                               │ (With Auth)  │
                                                └──────────────┘
                                                       │
                                                ┌──────────────┐
